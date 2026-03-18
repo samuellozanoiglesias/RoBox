@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "robox-octagon"
+version = "0.1.0"
+description = "OctagonEnv: a 2D multi-agent competitive foraging environment"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+authors = [
+  { name = "RoBox Contributors" }
+]
+dependencies = [
+  "numpy",
+  "matplotlib",
+]
+
+[project.optional-dependencies]
+gym = ["gym>=0.26"]
+gymnasium = ["gymnasium>=0.29"]
+train = ["torch>=2.0"]
+experiment = [
+  "pandas>=2.0",
+  "pyyaml>=6.0",
+  "tqdm>=4.66",
+  "tables>=3.9",
+]
+analysis = [
+  "pandas>=2.0",
+  "matplotlib>=3.8",
+  "seaborn>=0.13",
+  "scipy>=1.11",
+  "statsmodels>=0.14",
+  "pingouin>=0.5",
+  "tables>=3.9",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]

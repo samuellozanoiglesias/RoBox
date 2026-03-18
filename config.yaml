@@ -1,0 +1,17 @@
+pipeline:
+  experiment_config: configs/experiment.yaml
+  results_dir: results
+
+  training:
+    run_training: false
+
+  data:
+    # Optional explicit datasets. If omitted, trials are loaded from experiment log_dir pair_*/trials.csv.
+    agents_trials_csv: ""
+    # Optional socially-blind dataset for RL comparison panels/tests.
+    blind_trials_csv: ""
+
+  attractor:
+    shotgun_samples: 500
+    n_starts: 5
+    max_fit_rows: 1200
