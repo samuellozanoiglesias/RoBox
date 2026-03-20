@@ -10,7 +10,7 @@ readme = "README.md"
 requires-python = ">=3.9"
 license = { file = "LICENSE" }
 authors = [
-  { name = "RoBox Contributors" }
+  { name = "Samuel Lozano" }
 ]
 dependencies = [
   "numpy",
@@ -18,8 +18,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-gym = ["gym>=0.26"]
 gymnasium = ["gymnasium>=0.29"]
+gym = ["gym>=0.26"]
 train = ["torch>=2.0"]
 experiment = [
   "pandas>=2.0",

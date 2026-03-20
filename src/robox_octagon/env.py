@@ -1,3 +1,4 @@
+# Author: Samuel Lozano
 from __future__ import annotations
 
 from collections import deque
@@ -24,6 +25,7 @@ class OctagonEnv:
         max_trials: int = 150,
         seed: Optional[int] = None,
     ) -> None:
+        print(f"[DEBUG - env.py] Initializing OctagonEnv with dt={dt}, inradius={inradius}, max_speed={max_speed}, max_trials={max_trials}, seed={seed}")
         self.dt = float(dt)
         self.inradius = float(inradius)
         self.max_speed = float(max_speed)
@@ -99,8 +101,9 @@ class OctagonEnv:
         self.speed_history: List[deque] = []
         self.reward_history: List[deque] = []
 
-        self.obs_dim = 26
-        low, high = self._build_observation_bounds()
+        self.obs_dim = 32  # 4 vision vectors x 8 bins
+        low = np.zeros(self.obs_dim, dtype=np.float32)
+        high = np.ones(self.obs_dim, dtype=np.float32) * 10.0
         self.observation_space = make_box(low=low, high=high)
         global_low = np.concatenate([low, low, np.array([0.0, 0.0, 0.0], dtype=np.float32)])
         global_high = np.concatenate(
@@ -112,8 +115,37 @@ class OctagonEnv:
         )
         self.global_state_space = make_box(low=global_low, high=global_high)
 
+        # Action space: 8 directions (walls), turn left, turn right
+        from .spaces import make_discrete
+        self.action_dim = 10
+        self.action_space = make_discrete(self.action_dim)
+
+        # Agent state tracking
+        self.agent_states = ["waiting"] * self.n_agents  # "moving", "waiting"
+        self.agent_paths = [[] for _ in range(self.n_agents)]
+        self.agent_prev_vision = [None] * self.n_agents
+        self.agent_headings = np.zeros(self.n_agents, dtype=np.float32)
+
+    def _distance_to_wall(self, pos: np.ndarray, direction: np.ndarray) -> float:
+        """Compute minimum distance from pos in direction to octagon wall."""
+        min_dist = np.inf
+        for i in range(len(self.patch_coords)):
+            wall_point = self.patch_coords[i]
+            normal = self.wall_normals[i]
+            denom = np.dot(direction, normal)
+            if abs(denom) < 1e-8:
+                continue  # Ray is parallel to wall
+            t = np.dot(wall_point - pos, normal) / denom
+            if t > 0:
+                min_dist = min(min_dist, t)
+        return float(min_dist) if np.isfinite(min_dist) else 0.0
+    
+    def _get_agent_vision(self, agent_id: int):
+        from .observations import build_observation
+        return build_observation(self, agent_id, self.t_stimulus_onset)
+
     def set_context(self, context: str) -> None:
-        """Set context mode: 'solo' or 'social'."""
+        print(f"[DEBUG - env.py] Setting context: {context}")
         context = context.lower().strip()
         if context not in {"solo", "social"}:
             raise ValueError("context must be 'solo' or 'social'")
@@ -121,20 +153,23 @@ class OctagonEnv:
         self.n_agents = 1 if context == "solo" else 2
 
     def reset(self, context: str = "solo"):
-        """Start a new session and return the initial observation."""
+        print(f"[DEBUG - env.py] Resetting environment with context: {context}")
         self.set_context(context)
 
         self.positions = np.zeros((self.n_agents, 2), dtype=float)
         for i in range(self.n_agents):
             self.positions[i] = self._sample_point_in_octagon()
+            print(f"[DEBUG - env.py] Agent {i} initial position: {self.positions[i]}")
 
         self.agent_value_maps = [self._sample_value_map() for _ in range(self.n_agents)]
+        print(f"[DEBUG - env.py] Agent value maps: {self.agent_value_maps}")
 
         self.session_time = 0.0
         self.session_done = False
         self.trial_count = 0
         self.trial_log = []
         self.trial_schedule = self._build_trial_schedule()
+        print(f"[DEBUG - env.py] Trial schedule: {self.trial_schedule}")
         self.speed_history = [deque([0.0] * 10, maxlen=10) for _ in range(self.n_agents)]
         self.reward_history = [deque(maxlen=5) for _ in range(self.n_agents)]
         self.current_trial_arrival_times = np.full((self.n_agents, 2), np.inf, dtype=float)
@@ -144,13 +179,19 @@ class OctagonEnv:
         self.target_selection_done = False
         self.waiting_state = np.zeros(self.n_agents, dtype=bool)
 
+        self.agent_states = ["waiting"] * self.n_agents
+        self.agent_paths = [[] for _ in range(self.n_agents)]
+        self.agent_prev_vision = [None] * self.n_agents
+        self.agent_headings = np.zeros(self.n_agents, dtype=np.float32)
+
         self._start_new_trial()
 
         return self._get_observation()
 
     def step(self, actions: Sequence[Sequence[float]]):
-        """Advance simulation by one step and return (obs, rewards, dones, info)."""
+        print(f"[DEBUG - env.py] step() called with actions: {actions}")
         if self.session_done:
+            print(f"[DEBUG - env.py] Session done, returning zeros.")
             rewards = np.zeros(self.n_agents, dtype=float)
             dones = {
                 "agents": np.ones(self.n_agents, dtype=bool),
@@ -165,15 +206,76 @@ class OctagonEnv:
         prev_positions = self.positions.copy()
         speeds = np.zeros(self.n_agents, dtype=float)
 
-        if self.phase in {"iti", "pre_stim"}:
-            deltas = self._format_free_movement_actions(actions)
-            if deltas is not None:
-                speeds = self._move_agents(deltas)
-        elif self.phase == "choice":
-            if not self.target_selection_done:
-                self._set_trial_targets(actions)
-                self.target_selection_done = True
-            speeds = self._apply_navigation_step()
+        # Ensure actions is always a sequence
+        if isinstance(actions, int):
+            actions = [actions]
+        # Action handling
+        for i in range(self.n_agents):
+            ai = actions[i]
+            if isinstance(ai, int):
+                action = ai
+            elif isinstance(ai, (list, tuple, np.ndarray)):
+                action = int(ai[0])
+            else:
+                raise TypeError(f"Unsupported action type for agent {i}: {type(ai)}")
+            print(f"[DEBUG - env.py] Agent {i} action: {action}, state: {self.agent_states[i]}")
+            if self.agent_states[i] == "waiting":
+                if action < 8:  # Choose wall direction
+                    # Check if blocked by other agent
+                    blocked = False
+                    if self.context == "social":
+                        opp_pos = self.positions[1-i]
+                        # If opp is in the way, block
+                        # (simple check: opp is between agent and wall)
+                        # TODO: improve with vision field
+                        pass
+                    if not blocked:
+                        # Plan path using A*
+                        from .astar import AStarPathfinder
+                        grid = np.zeros((8,8), dtype=int)  # Placeholder grid
+                        start = tuple(np.round(self.positions[i]).astype(int))
+                        goal = (action, action)  # Placeholder: wall index
+                        pathfinder = AStarPathfinder(grid)
+                        path = pathfinder.find_path(start, goal)
+                        self.agent_paths[i] = path
+                        self.agent_states[i] = "moving"
+                        print(f"[DEBUG - env.py] Agent {i} path: {path}")
+                elif action == 8:  # Turn left
+                    self.agent_headings[i] -= np.deg2rad(120)
+                    print(f"[DEBUG - env.py] Agent {i} turned left. Heading: {self.agent_headings[i]}")
+                elif action == 9:  # Turn right
+                    self.agent_headings[i] += np.deg2rad(120)
+                    print(f"[DEBUG - env.py] Agent {i} turned right. Heading: {self.agent_headings[i]}")
+                # After rotation, agent is prompted for new action next tick
+            elif self.agent_states[i] == "moving":
+                # Move along path
+                if self.agent_paths[i]:
+                    next_pos = np.array(self.agent_paths[i].pop(0), dtype=float)
+                    self.positions[i] = next_pos
+                    print(f"[DEBUG - env.py] Agent {i} moved to: {self.positions[i]}")
+                    # Check for collision
+                    for j in range(self.n_agents):
+                        if i != j and np.allclose(self.positions[i], self.positions[j]):
+                            self.agent_states[i] = "waiting"
+                            self.agent_states[j] = "waiting"
+                            print(f"[DEBUG - env.py] Collision detected between agent {i} and agent {j}")
+                    # If reached wall, stop
+                    if not self.agent_paths[i]:
+                        self.agent_states[i] = "waiting"
+                        print(f"[DEBUG - env.py] Agent {i} reached wall and is now waiting.")
+                else:
+                    self.agent_states[i] = "waiting"
+                    print(f"[DEBUG - env.py] Agent {i} has no path, now waiting.")
+
+        # Detect if other agent appears in vision field and was not there before
+        for i in range(self.n_agents):
+            vision = self._get_agent_vision(i)
+            if self.agent_prev_vision[i] is not None:
+                prev = self.agent_prev_vision[i]
+                if vision[3].sum() > 0 and prev[3].sum() == 0:
+                    self.agent_states[i] = "waiting"
+                    print(f"[DEBUG - env.py] Agent {i} sees other agent in vision field.")
+            self.agent_prev_vision[i] = vision
 
         self._update_speed_history(speeds)
 
@@ -189,12 +291,15 @@ class OctagonEnv:
             "trial_type": self.trial_type,
         }
 
+        print(f"[DEBUG - env.py] Phase: {self.phase}, phase_elapsed: {self.phase_elapsed}")
+
         if self.phase == "iti":
             if self.phase_elapsed >= self.iti_duration:
                 self.phase = "pre_stim"
                 self.phase_elapsed = 0.0
                 self.background_flag = 1
                 info["event"] = "trial_start"
+                print(f"[DEBUG - env.py] Transition to pre_stim phase.")
 
         elif self.phase == "pre_stim":
             if self.phase_elapsed >= self.pre_stim_delay:
@@ -207,12 +312,15 @@ class OctagonEnv:
                 )
                 self.t_stimulus_onset = self.session_time
                 info["event"] = "stimulus_onset"
+                print(f"[DEBUG - env.py] Transition to choice phase.")
 
         elif self.phase == "choice":
             shaping_step = self._compute_step_shaping(prev_positions=prev_positions)
+            print(f"[DEBUG - env.py] Shaping step: {shaping_step}")
             if self.use_shaped_rewards:
                 rewards += shaping_step
             outcome = self._resolve_choice_phase(shaping_step=shaping_step)
+            print(f"[DEBUG - env.py] Outcome: {outcome}")
             if outcome is not None:
                 rewards += outcome
                 info["event"] = "trial_end"
@@ -222,12 +330,14 @@ class OctagonEnv:
                 info["travel_distance"] = self.current_trial_travel_distance
                 info["patch_chosen_role"] = self.current_trial_choice_role
                 info["trial_result"] = self.trial_log[-1]
+                print(f"[DEBUG - env.py] Trial ended. Winner: {self.current_trial_winner}, Choice patch: {self.current_trial_choice_patch}")
                 self._start_new_trial()
 
         dones = {
             "agents": np.full(self.n_agents, self.session_done, dtype=bool),
             "__all__": bool(self.session_done),
         }
+        print(f"[DEBUG - env.py] step() finished. Rewards: {rewards}, Dones: {dones}, Info: {info}")
         return self._get_observation(), rewards, dones, info
 
     def render(self):

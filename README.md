@@ -1,5 +1,7 @@
 # RoBox
 
+**Author:** Samuel Lozano
+
 Package-ready implementation of `OctagonEnv` with a src-layout Python package.
 
 ## Structure

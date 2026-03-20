@@ -1,3 +1,4 @@
+# Author: Samuel Lozano
 from pathlib import Path
 import importlib
 import sys

@@ -1,3 +1,4 @@
+# Author: Samuel Lozano
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -146,6 +147,7 @@ class MAPPOTrainer:
         device: Optional[str] = None,
         actor_seeds: Optional[Tuple[int, int]] = None,
     ) -> None:
+        print(f"[DEBUG - mappo.py] Initializing MAPPOTrainer with obs_dim={obs_dim}, global_state_dim={global_state_dim}, action_dim={action_dim}, gamma={gamma}, lambda_gae={lambda_gae}, clip_eps={clip_eps}, lr_actor={lr_actor}, lr_critic={lr_critic}, n_epochs={n_epochs}, batch_size={batch_size}, rollout_length={rollout_length}, entropy_coeff={entropy_coeff}, value_loss_coeff={value_loss_coeff}, max_grad_norm={max_grad_norm}, checkpoint_dir={checkpoint_dir}, device={device}, actor_seeds={actor_seeds}")
         self.obs_dim = int(obs_dim)
         self.global_state_dim = int(global_state_dim)
         self.action_dim = int(action_dim)
@@ -201,6 +203,7 @@ class MAPPOTrainer:
         actor: MAPPOActor,
         obs_vec: np.ndarray,
     ) -> Tuple[int, np.ndarray, float]:
+        print(f"[DEBUG - mappo.py] _select_action called with obs_vec: {obs_vec}")
         obs_t = torch.as_tensor(obs_vec, dtype=torch.float32, device=self.device).unsqueeze(0)
         with torch.no_grad():
             logits, delta = actor(obs_t)
@@ -208,17 +211,21 @@ class MAPPOTrainer:
             discrete_action = int(dist.sample().item())
             log_prob = float(dist.log_prob(torch.tensor([discrete_action], device=self.device)).item())
             continuous = delta.squeeze(0).cpu().numpy()
+        print(f"[DEBUG - mappo.py] _select_action result: discrete_action={discrete_action}, continuous={continuous}, log_prob={log_prob}")
         return discrete_action, continuous.astype(np.float32), log_prob
 
     def collect_rollout(self, env, n_steps: int) -> Tuple[MAPPOBuffer, RolloutStats]:
+        print(f"[DEBUG - mappo.py] collect_rollout called with n_steps: {n_steps}, current_context: {self.current_context}, current_solo_agent: {self.current_solo_agent}")
         n_steps = int(n_steps)
         if self.current_obs is None:
             self.current_obs = env.reset(context=self.current_context)
+            print(f"[DEBUG - mappo.py] Environment reset for collect_rollout.")
 
         if self.current_context == "social":
             actor_ids = [0, 1]
         else:
             actor_ids = [self.current_solo_agent]
+        print(f"[DEBUG - mappo.py] actor_ids: {actor_ids}")
 
         buffer = MAPPOBuffer(actor_ids=actor_ids, obs_dim=self.obs_dim, global_state_dim=self.global_state_dim)
 
@@ -233,12 +240,13 @@ class MAPPOTrainer:
         selected_continuous = np.zeros((len(actor_ids), 2), dtype=np.float32)
         selected_logprob = np.zeros(len(actor_ids), dtype=np.float32)
 
-        for _ in range(n_steps):
+        for step_idx in range(n_steps):
             obs_dict = self.current_obs
             agent_obs = np.asarray(obs_dict["agent_obs"], dtype=np.float32)
             global_state = np.asarray(obs_dict["global_state"], dtype=np.float32)
             phase = str(obs_dict.get("phase", "iti"))
             trial_index = int(obs_dict.get("trial_index", 0))
+            print(f"[DEBUG - mappo.py] Step {step_idx}: phase={phase}, trial_index={trial_index}")
 
             with torch.no_grad():
                 gs_t = torch.as_tensor(global_state, dtype=torch.float32, device=self.device).unsqueeze(0)
@@ -262,6 +270,7 @@ class MAPPOTrainer:
                         selected_discrete[local_idx] = int(act)
                         selected_continuous[local_idx] = cont
                         selected_logprob[local_idx] = float(lp)
+                        print(f"[DEBUG - mappo.py] Step {step_idx}: actor_id={actor_id}, act={act}, cont={cont}, lp={lp}")
 
                     discrete_actions[local_idx] = int(selected_discrete[local_idx])
                     continuous_actions[local_idx] = np.asarray(
@@ -283,8 +292,10 @@ class MAPPOTrainer:
                 env_action_arr = np.asarray(discrete_actions, dtype=np.int64)
             else:
                 env_action_arr = int(discrete_actions[0])
+            print(f"[DEBUG - mappo.py] Step {step_idx}: env_action_arr={env_action_arr}")
 
             next_obs, rewards, dones, info = env.step(env_action_arr)
+            print(f"[DEBUG - mappo.py] Step {step_idx}: rewards={rewards}, dones={dones}, info={info}")
             rewards = np.asarray(rewards, dtype=np.float32)
             local_done = np.asarray(dones["agents"], dtype=np.float32)
 
@@ -314,9 +325,11 @@ class MAPPOTrainer:
                 self.total_trials += 1
                 if self.total_trials % 1000 == 0:
                     self._save_checkpoint(trial=self.total_trials)
+                    print(f"[DEBUG - mappo.py] Saved checkpoint at trial {self.total_trials}")
 
             if bool(dones["__all__"]):
                 next_obs = env.reset(context=self.current_context)
+                print(f"[DEBUG - mappo.py] Session ended, environment reset.")
 
             self.current_obs = next_obs
 
@@ -336,6 +349,7 @@ class MAPPOTrainer:
             reward_sum=reward_sum,
             trial_results=trial_results,
         )
+        print(f"[DEBUG - mappo.py] collect_rollout finished. stats: {stats}")
         return buffer, stats
 
     def state_dict(self) -> Dict[str, object]:

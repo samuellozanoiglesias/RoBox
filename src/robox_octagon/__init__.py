@@ -1,3 +1,4 @@
+# Author: Samuel Lozano
 from .env import OctagonEnv
 from .navigation import NavigationController, clip_to_octagon, estimate_travel_time
 from .observations import build_global_state, build_observation

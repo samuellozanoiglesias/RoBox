@@ -1,3 +1,4 @@
+# Author: Samuel Lozano
 pipeline:
   experiment_config: configs/experiment.yaml
   results_dir: results

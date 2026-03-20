@@ -1,3 +1,4 @@
+# Author: Samuel Lozano
 from __future__ import annotations
 
 import argparse

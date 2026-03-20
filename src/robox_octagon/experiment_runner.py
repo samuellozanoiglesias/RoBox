@@ -1,3 +1,4 @@
+# Author: Samuel Lozano
 from __future__ import annotations
 
 import argparse
@@ -54,6 +55,7 @@ def _patch_sep_deg(high_patch_id: float, low_patch_id: float) -> float:
 
 class ExperimentLogger:
     def __init__(self, pair_dir: Path) -> None:
+        print(f"[DEBUG - experiment_runner.py] Initializing ExperimentLogger for pair_dir: {pair_dir}")
         self.pair_dir = pair_dir
         self.pair_dir.mkdir(parents=True, exist_ok=True)
         self.trials_csv = self.pair_dir / "trials.csv"
@@ -64,18 +66,24 @@ class ExperimentLogger:
         self.block_records: List[Dict[str, Any]] = []
 
         if self.trials_csv.exists() or self.blocks_csv.exists():
+            print(f"[DEBUG - experiment_runner.py] trials_csv or blocks_csv exists, loading...")
             self.load()
 
     def log_trial(self, row: Dict[str, Any]) -> None:
+        print(f"[DEBUG - experiment_runner.py] Logging trial: {row}")
         self.trial_records.append(dict(row))
 
     def log_block(self, row: Dict[str, Any]) -> None:
+        print(f"[DEBUG - experiment_runner.py] Logging block: {row}")
         self.block_records.append(dict(row))
 
     def save(self) -> None:
+        print(f"[DEBUG - experiment_runner.py] Saving trial and block records...")
         trials_df = pd.DataFrame(self.trial_records)
         blocks_df = pd.DataFrame(self.block_records)
 
+        print(f"[DEBUG - experiment_runner.py] trials_df shape: {trials_df.shape}")
+        print(f"[DEBUG - experiment_runner.py] blocks_df shape: {blocks_df.shape}")
         trials_df.to_csv(self.trials_csv, index=False)
         blocks_df.to_csv(self.blocks_csv, index=False)
 
@@ -85,6 +93,7 @@ class ExperimentLogger:
             "mean_raw_reward": float(trials_df["raw_reward"].mean()) if len(trials_df) > 0 else 0.0,
             "mean_shaped_reward": float(trials_df["shaped_reward"].mean()) if len(trials_df) > 0 else 0.0,
         }
+        print(f"[DEBUG - experiment_runner.py] summary: {summary}")
         summary_df = pd.DataFrame([summary])
 
         with pd.HDFStore(self.summary_h5, mode="w") as store:
@@ -93,10 +102,13 @@ class ExperimentLogger:
             store.put("summary", summary_df, format="table")
 
     def load(self) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        print(f"[DEBUG - experiment_runner.py] Loading trials and blocks from CSV...")
         trials_df = pd.read_csv(self.trials_csv) if self.trials_csv.exists() else pd.DataFrame()
         blocks_df = pd.read_csv(self.blocks_csv) if self.blocks_csv.exists() else pd.DataFrame()
         self.trial_records = trials_df.to_dict(orient="records")
         self.block_records = blocks_df.to_dict(orient="records")
+        print(f"[DEBUG - experiment_runner.py] Loaded trials_df shape: {trials_df.shape}")
+        print(f"[DEBUG - experiment_runner.py] Loaded blocks_df shape: {blocks_df.shape}")
         return trials_df, blocks_df
 
 
@@ -253,7 +265,7 @@ def _build_trial_rows(
             "patch_separation_deg": float(patch_separation_deg),
             "choice": choice,
             "RT": float(rt_value) if rt_value is not None else np.nan,
-            "travel_distance": float(detail.get("travel_distance", np.nan)),
+            "travel_distance": float(detail.get("travel_distance")) if detail.get("travel_distance") is not None else np.nan,
             "dist2high_at_onset": dist2high,
             "dist2low_at_onset": dist2low,
             "opp_dist2high_at_onset": opp_dist2high,
@@ -269,15 +281,26 @@ def _build_trial_rows(
 
 
 def run_experiment(pair_id: int, seed_A: int, seed_B: int, config: Dict[str, Any]) -> Dict[str, Any]:
+
+    print(f"[DEBUG - experiment_runner.py] Starting run_experiment with pair_id: {pair_id}, seed_A: {seed_A}, seed_B: {seed_B}")
+
     exp_cfg = config["experiment"]
     env_cfg = config["env"]
     mappo_cfg = config["mappo"]
     protocol = config["protocol"]
 
-    pair_dir = Path(exp_cfg["log_dir"]) / f"pair_{seed_A}_{seed_B}"
+    import os
+    robox_data_dir = os.environ.get("ROBOX_DATA_DIR")
+    if robox_data_dir:
+        print(f"[DEBUG - experiment_runner.py] Using ROBOX_DATA_DIR for pair outputs: {robox_data_dir}")
+        pair_dir = Path(robox_data_dir) / f"pair_{seed_A}_{seed_B}"
+    else:
+        pair_dir = Path(exp_cfg["log_dir"]) / f"pair_{seed_A}_{seed_B}"
+        print(f"[DEBUG - experiment_runner.py] Using log_dir for pair outputs: {pair_dir}")
     checkpoints_dir = pair_dir / "checkpoints"
     logger = ExperimentLogger(pair_dir)
 
+    print(f"[DEBUG - experiment_runner.py] Creating OctagonEnv...")
     env = OctagonEnv(
         dt=float(env_cfg["dt"]),
         inradius=float(env_cfg["inradius"]),
@@ -286,7 +309,9 @@ def run_experiment(pair_id: int, seed_A: int, seed_B: int, config: Dict[str, Any
         seed=int(pair_id),
     )
 
+    print(f"[DEBUG - experiment_runner.py] Setting torch seed: {seed_A}")
     torch.manual_seed(int(seed_A))
+    print(f"[DEBUG - experiment_runner.py] Creating MAPPOTrainer...")
     trainer = MAPPOTrainer(
         obs_dim=int(env.obs_dim),
         global_state_dim=int(2 * env.obs_dim + 3),
@@ -306,9 +331,11 @@ def run_experiment(pair_id: int, seed_A: int, seed_B: int, config: Dict[str, Any
         actor_seeds=(int(seed_A), int(seed_B)),
     )
 
+    print(f"[DEBUG - experiment_runner.py] Initializing state...")
     state = _init_state()
     latest = _latest_checkpoint(checkpoints_dir)
     if latest is not None:
+        print(f"[DEBUG - experiment_runner.py] Loading latest checkpoint: {latest}")
         state = _load_run_checkpoint(latest, trainer)
 
     ckpt_every = int(exp_cfg["checkpoint_every_trials"])
@@ -530,32 +557,44 @@ def load_config(path: str) -> Dict[str, Any]:
 
 
 def main() -> None:
+    print("[DEBUG - experiment_runner.py] Parsing arguments...")
     parser = argparse.ArgumentParser(description="Run OctagonEnv MAPPO experimental protocol")
     parser.add_argument("--config", type=str, default="configs/experiment.yaml")
     parser.add_argument("--parallel", action="store_true", help="Run pairs in parallel")
     parser.add_argument("--num-workers", type=int, default=None)
     args = parser.parse_args()
 
+    print(f"[DEBUG - experiment_runner.py] args: {args}")
     config = load_config(args.config)
+    print(f"[DEBUG - experiment_runner.py] Loaded config: {config}")
     pairs = _pair_seeds(config)
+    print(f"[DEBUG - experiment_runner.py] pairs: {pairs}")
 
     run_parallel = bool(args.parallel or config["experiment"].get("parallel", False))
     num_workers = int(args.num_workers or config["experiment"].get("num_workers", 2))
+    print(f"[DEBUG - experiment_runner.py] run_parallel: {run_parallel}, num_workers: {num_workers}")
 
     tasks = [(i, int(sa), int(sb), config) for i, (sa, sb) in enumerate(pairs)]
+    print(f"[DEBUG - experiment_runner.py] tasks: {tasks}")
 
     results: List[Dict[str, Any]] = []
     if run_parallel:
+        print("[DEBUG - experiment_runner.py] Running in parallel mode...")
         with mp.Pool(processes=num_workers) as pool:
             for out in tqdm(pool.imap_unordered(_run_experiment_worker, tasks), total=len(tasks), desc="Pairs"):
+                print(f"[DEBUG - experiment_runner.py] Got result: {out}")
                 results.append(out)
     else:
+        print("[DEBUG - experiment_runner.py] Running in sequential mode...")
         for task in tqdm(tasks, total=len(tasks), desc="Pairs"):
-            results.append(_run_experiment_worker(task))
+            out = _run_experiment_worker(task)
+            print(f"[DEBUG - experiment_runner.py] Got result: {out}")
+            results.append(out)
 
     out_df = pd.DataFrame(results)
     logs_dir = Path(config["experiment"]["log_dir"])
     logs_dir.mkdir(parents=True, exist_ok=True)
+    print(f"[DEBUG - experiment_runner.py] Saving experiment index to: {logs_dir / 'experiment_index.csv'}")
     out_df.to_csv(logs_dir / "experiment_index.csv", index=False)
 
 
